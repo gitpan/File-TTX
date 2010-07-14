@@ -1,5 +1,8 @@
 Revision history for File-TTX
 
-0.01    Date/time
-        First version, released on an unsuspecting world.
+0.01    2010-07-09
+        Initial release
+
+0.02	2010-07-14
+        Corrected the required version of XML::xmlapi in Makefile.PL
 

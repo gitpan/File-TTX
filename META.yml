@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               File-TTX
-version:            0.01
+version:            0.02
 abstract:           Utilities for dealing with TRADOS TTX files
 author:
     - Michael Roberts <michael@vivtek.com>
@@ -10,7 +10,7 @@ configure_requires:
     ExtUtils::MakeMaker:  0
 requires:
     Test::More:   0
-    XML::xmlapi:  0
+    XML::xmlapi:  0.07
 no_index:
     directory:
         - t
