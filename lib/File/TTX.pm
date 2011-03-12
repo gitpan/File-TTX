@@ -11,11 +11,11 @@ File::TTX - Utilities for dealing with TRADOS TTX files
 
 =head1 VERSION
 
-Version 0.02
+Version 0.03
 
 =cut
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 
 =head1 SYNOPSIS
@@ -78,7 +78,26 @@ To do a more data-oriented extraction, you'd want the C<segments> function, and 
    
 Clear?  Sure it is.
 
-There are still plenty of gaps in this API; I plan to extend it as I run into new use cases.  Now that I've actually put the
+Here's another example: a filter to strip all pre-translated content out of a TTX in case you want a new, un-pre-translated copy.
+
+   use File::TTX;
+
+   my $in = $ARGV[0];
+   my $outf = $in;
+   $outf =~ s/\.xls\.ttx$/-stripped.xls.ttx/;
+
+   my $ttx = File::TTX->load($in);
+   my $out = File::TTX->new(from=>$ttx);
+
+   foreach my $piece ($ttx->content_elements) {
+      $out->append_copy ($piece->source_xml);
+   }
+   
+   $out->write($outf);
+
+It should be easy to see how you can expand that filter idea into nearly anything you need.
+
+There are still plenty of gaps in this API! I plan to extend it as I run into new use cases.  Now that I've actually put the
 darned thing on CPAN, I won't lose it in the meantime, so I won't have to rewrite it.  Again.  This is the fourth time, if
 you're keeping count.  (And of course, since this is the first time I've managed to upload it, you I<can't> be keeping count.)
 
@@ -100,11 +119,17 @@ sub new {
    } else {
       $self->{xml} = XML::xmlapi->parse ('<TRADOStag Version="2.0"><FrontMatter><ToolSettings/><UserSettings/></FrontMatter><Body><Raw></Raw></Body></TRADOStag>');
    }
+   $self->{file} = $input{'file'};
    $self->{'frontmatter'} = $self->{xml}->search_first ('FrontMatter');
    $self->{'toolsettings'} = $self->{frontmatter}->search_first ('ToolSettings');
    $self->{'usersettings'} = $self->{frontmatter}->search_first ('UserSettings');
    $self->{'body'} = $self->{xml}->search_first ('Raw');
    
+   if ($input{'from'}) {
+      $self->copy_header ($input{'from'});
+      return $self;
+   }
+
    my $lookup = sub {
       my ($field, $where, $default) = @_;
       return $input{$field} if $input{$field};
@@ -129,7 +154,6 @@ sub new {
    return $self;
 }
 
-
 =head2 load()
 
 The C<load> function loads an existing TTX.  Said file will remember where it came from, so you don't have to give the
@@ -140,7 +164,7 @@ filename again when you write it (assuming you write it, of course).
 sub load {
    my ($class, $file) = @_;
    my $xml = XML::xmlapi->parse_from_file($file);
-   return $class->new(xml => $xml);
+   return $class->new(xml => $xml, file=>$file);
 }
 
 =head1 FILE MANIPULATION
@@ -191,6 +215,30 @@ sub SettingsRelativePath { $_[0]->{usersettings}->set_or_get ('SettingsRelativeP
 sub DataType             { $_[0]->{usersettings}->set_or_get ('DataType',             $_[1]) }
 sub SettingsName         { $_[0]->{usersettings}->set_or_get ('SettingsName',         $_[1]) }
 sub TargetDefaultFont    { $_[0]->{usersettings}->set_or_get ('TargetDefaultFont',    $_[1]) }
+
+=head2 copy_header ($source)
+
+Copies the header information from another TTX into this one.
+
+=cut
+sub copy_header {
+   my ($self, $source) = @_;
+ 
+   $self->CreationTool         ($source->CreationTool);
+   $self->CreationDate         ($source->CreationDate);
+   $self->CreationToolVersion  ($source->CreationToolVersion);
+
+   $self->SourceDocumentPath   ($source->SourceDocumentPath);
+   $self->OEncoding            ($source->OEncoding);
+   $self->TargetLanguage       ($source->TargetLanguage);
+   $self->PlugInInfo           ($source->PlugInInfo);
+   $self->SourceLanguage       ($source->SourceLanguage);
+   $self->SettingsPath         ($source->SettingsPath);
+   $self->SettingsRelativePath ($source->SettingsRelativePath);
+   $self->DataType             ($source->DataType);
+   $self->SettingsName         ($source->SettingsName);
+   $self->TargetDefaultFont    ($source->TargetDefaultFont);
+}
 
 =head2 slang(), tlang()
 
@@ -300,16 +348,30 @@ Appends a opening or closing tag.  Here, the C<$tag> is required.  (Well, it wil
 sub append_open_tag {
    my ($self, $text, $tag) = @_;
    $tag = 'cf' unless $tag;
-   $text = XML::xmlapi_escape($text);
-   my $mark = XML::xmlapi_parse ("<ut LeftEdge=\"angle\" Style=\"external\" DisplayText=\"$tag\" Type=\"start\">$text</ut>");
+   $text = XML::xmlapi->escape($text);
+   my $mark = XML::xmlapi->parse ("<ut RightEdge=\"angle\" Style=\"external\" DisplayText=\"$tag\" Type=\"start\">$text</ut>");
    $self->{body}->append($mark);
 }
 sub append_close_tag {
    my ($self, $text, $tag) = @_;
    $tag = '/cf' unless $tag;
-   $text = XML::xmlapi_escape($text);
-   my $mark = XML::xmlapi_parse ("<ut RightEdge=\"angle\" Style=\"external\" DisplayText=\"$tag\" Type=\"end\">$text</ut>");
+   $text = XML::xmlapi->escape($text);
+   my $mark = XML::xmlapi->parse ("<ut LeftEdge=\"angle\" Style=\"external\" DisplayText=\"$tag\" Type=\"end\">$text</ut>");
    $self->{body}->append($mark);
+}
+
+=head2 append_copy
+
+If you have an XML piece from another TTX, you can append a copy of it directly into this TTX.  Note that the "XML piece" from C<source> and
+C<translated> of a segment may actually be a list (because a segment may contain tags and text).
+
+=cut
+
+sub append_copy {
+   my $self = shift;
+   foreach my $piece (@_) {
+      $self->{body}->append($piece->copy);
+   }
 }
 
 =head1 READING FROM THE BODY
@@ -417,12 +479,21 @@ sub tag {
    return $self->set_or_get("DisplayText", shift);
 }
 
-=head2 translated()
+=head2 translated(), translated_xml()
 
-Returns the translated content of a segment, or just the content for anything else.  Use with care.
+Returns the translated content of a segment, or just the content for anything else.  Use with care.  The C<_xml> variant returns the underlying
+XML object - use with even more care.
 
 =cut
 
+sub translated_xml {
+   my $self = shift;
+   my $type = $self->type;
+   return $self unless $type eq 'segment';
+   my @t = $self->elements();
+   return $t[1]->children if defined $t[1];
+   return $t[0]->children;
+}
 sub translated {
    my $self = shift;
    my $type = $self->type;
@@ -432,12 +503,19 @@ sub translated {
    return $t[0]->content;
 }
 
-=head2 source()
+=head2 source(), source_xml()
 
-Returns the source content of a segment, or just the content for anything else.
+Returns the source content of a segment, or just the content for anything else.  The C<_xml> variant returns the xml object, so you get the tag
+structure if it's a complex source segment.
 
 =cut
 
+sub source_xml {
+   my $self = shift;
+   my $type = $self->type;
+   return $self unless $type eq 'segment';
+   $self->search_first('Tuv')->children;
+}
 sub source {
    my $self = shift;
    my $type = $self->type;

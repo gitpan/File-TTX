@@ -6,3 +6,7 @@ Revision history for File-TTX
 0.02	2010-07-14
         Corrected the required version of XML::xmlapi in Makefile.PL
 
+0.03    2011-03-12
+        Added append_copy, source_xml and translated_xml to permit easy filter writing.
+        Added 'from'=>TTX option for creating new TTXs with the headers of an old one.
+        Added ->copy_headers to do that actual work.

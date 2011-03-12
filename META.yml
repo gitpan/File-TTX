@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               File-TTX
-version:            0.02
+version:            0.03
 abstract:           Utilities for dealing with TRADOS TTX files
 author:
     - Michael Roberts <michael@vivtek.com>
