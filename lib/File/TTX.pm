@@ -2,7 +2,7 @@ package File::TTX;
 
 use warnings;
 use strict;
-use XML::xmlapi;
+use XML::Snap;
 use POSIX qw/strftime/;
 
 =head1 NAME
@@ -11,11 +11,11 @@ File::TTX - Utilities for dealing with TRADOS TTX files
 
 =head1 VERSION
 
-Version 0.03
+Version 0.04
 
 =cut
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 
 =head1 SYNOPSIS
@@ -57,7 +57,7 @@ being removed from the file).
 There are two basic modes for content extraction; either you want to scan all content, or you're just interested in the segments
 so you can toss them into an Excel spreadsheet or something.  These work pretty much the same; to scan all elements, you use
 C<content_elements> as follows; it returns a list of C<File::TTX::Content> elements, documented below, which are really just 
-C<XML::xmlapi> elements with a little extra sugar for convenience.
+C<XML::Snap> elements with a little extra sugar for convenience.
 
    use File::TTX;
    my $ttx = File::TTX->load('myfile.ttx');
@@ -65,7 +65,7 @@ C<XML::xmlapi> elements with a little extra sugar for convenience.
    foreach my $piece ($ttx->content_elements) {
       if ($piece->type eq 'mark') {
          # something
-      } elsif ($piece->type eq 'segment') {
+      } else {
          print $piece->translated . "\n";
       }
    }
@@ -97,15 +97,13 @@ Here's another example: a filter to strip all pre-translated content out of a TT
 
 It should be easy to see how you can expand that filter idea into nearly anything you need.
 
-There are still plenty of gaps in this API! I plan to extend it as I run into new use cases.  Now that I've actually put the
-darned thing on CPAN, I won't lose it in the meantime, so I won't have to rewrite it.  Again.  This is the fourth time, if
-you're keeping count.  (And of course, since this is the first time I've managed to upload it, you I<can't> be keeping count.)
+There are still plenty of gaps in this API! I plan to extend it as I run into new use cases. I'd be overjoyed to hear about yours.
 
 =head1 CREATING A TTX OBJECT
 
 =head2 new()
 
-The C<new> function creates a blank TTX so you can build whatever you want and write it out.  If you've already got an XML::xmlapi
+The C<new> function creates a blank TTX so you can build whatever you want and write it out.  If you've already got an XML::Snap
 structure (that's the library used internally for XML representation here) then you can pass it in and it will be broken down
 into useful structural components for the element access functions.
 
@@ -117,13 +115,13 @@ sub new {
    if ($input{'xml'}) {
       $self->{xml} = $input{'xml'};
    } else {
-      $self->{xml} = XML::xmlapi->parse ('<TRADOStag Version="2.0"><FrontMatter><ToolSettings/><UserSettings/></FrontMatter><Body><Raw></Raw></Body></TRADOStag>');
+      $self->{xml} = XML::Snap->parse ('<TRADOStag Version="2.0"><FrontMatter><ToolSettings/><UserSettings/></FrontMatter><Body><Raw></Raw></Body></TRADOStag>');
    }
    $self->{file} = $input{'file'};
-   $self->{'frontmatter'} = $self->{xml}->search_first ('FrontMatter');
-   $self->{'toolsettings'} = $self->{frontmatter}->search_first ('ToolSettings');
-   $self->{'usersettings'} = $self->{frontmatter}->search_first ('UserSettings');
-   $self->{'body'} = $self->{xml}->search_first ('Raw');
+   $self->{'frontmatter'} = $self->{xml}->first ('FrontMatter');
+   $self->{'toolsettings'} = $self->{frontmatter}->first ('ToolSettings');
+   $self->{'usersettings'} = $self->{frontmatter}->first ('UserSettings');
+   $self->{'body'} = $self->{xml}->first ('Raw');
    
    if ($input{'from'}) {
       $self->copy_header ($input{'from'});
@@ -159,11 +157,16 @@ sub new {
 The C<load> function loads an existing TTX.  Said file will remember where it came from, so you don't have to give the
 filename again when you write it (assuming you write it, of course).
 
+TRADOS is nice enough to provide us with TTX that is illegal XML sometimes, so load() has to load your entire file into memory to 
+sanitize it of illegal characters before the XML parser sees it.  This will unfortunately cause File::TTX to work from a different input
+from TRADOS native tools, but as long as your TTX isn't generated from a Word document with soft hyphens in it, you ought to be OK.
+
 =cut
 
 sub load {
    my ($class, $file) = @_;
-   my $xml = XML::xmlapi->parse_from_file($file);
+   my $xml = XML::Snap->load($file);
+   $xml->bless_text;
    return $class->new(xml => $xml, file=>$file);
 }
 
@@ -177,11 +180,20 @@ to the same place.
 =cut
 
 sub write {
-   my ($self, $file) = @_;
-   $file = $self->{file} unless $file;
+   my ($self, $fname) = @_;
+   $fname = $self->{file} unless $fname;
    
-   $self->{xml}->write_UCS2LE($file);
+   my $file;
+   open $file, ">:raw:encoding(UCS-2LE):crlf:utf8", $fname or croak $!;
+   print $file "\x{FEFF}";  # This is the byte order marker; Perl would do this for us, apparently, if we hadn't
+                            # explicitly specified the UCS-2LE encoding.
+   print $file "<?xml version='1.0'?>\n";
+   $self->{xml}->writestream($file);
+
+   #$self->{xml}->write_UCS2LE($file);
 }
+
+
 
 =head1 HEADER ACCESS
 
@@ -194,9 +206,9 @@ These are in the ToolSettings part of the header.  Mostly you don't care about t
 
 =cut
 
-sub CreationTool        { $_[0]->{toolsettings}->set_or_get ('CreationTool',        $_[1]) }
-sub CreationDate        { $_[0]->{toolsettings}->set_or_get ('CreationDate',        $_[1]) }
-sub CreationToolVersion { $_[0]->{toolsettings}->set_or_get ('CreationToolVersion', $_[1]) }
+sub CreationTool        { $_[0]->{toolsettings}->set ('CreationTool',        $_[1]) }
+sub CreationDate        { $_[0]->{toolsettings}->set ('CreationDate',        $_[1]) }
+sub CreationToolVersion { $_[0]->{toolsettings}->set ('CreationToolVersion', $_[1]) }
 
 =head2 SourceDocumentPath(), OEncoding(), TargetLanguage(), PlugInInfo(), SourceLanguage(), SettingsPath(), SettingsRelativePath(), DataType(), SettingsName(), TargetDefaultFont()
 
@@ -205,16 +217,16 @@ into the reason for this module, like writing a quick script to read or change t
 
 =cut
 
-sub SourceDocumentPath   { $_[0]->{usersettings}->set_or_get ('SourceDocumentPath',   $_[1]) }
-sub OEncoding            { $_[0]->{usersettings}->set_or_get ('O-Encoding',           $_[1]) }
-sub TargetLanguage       { $_[0]->{usersettings}->set_or_get ('TargetLanguage',       $_[1]) }
-sub PlugInInfo           { $_[0]->{usersettings}->set_or_get ('PlugInInfo',           $_[1]) }
-sub SourceLanguage       { $_[0]->{usersettings}->set_or_get ('SourceLanguage',       $_[1]) }
-sub SettingsPath         { $_[0]->{usersettings}->set_or_get ('SettingsPath',         $_[1]) }
-sub SettingsRelativePath { $_[0]->{usersettings}->set_or_get ('SettingsRelativePath', $_[1]) }
-sub DataType             { $_[0]->{usersettings}->set_or_get ('DataType',             $_[1]) }
-sub SettingsName         { $_[0]->{usersettings}->set_or_get ('SettingsName',         $_[1]) }
-sub TargetDefaultFont    { $_[0]->{usersettings}->set_or_get ('TargetDefaultFont',    $_[1]) }
+sub SourceDocumentPath   { $_[0]->{usersettings}->set ('SourceDocumentPath',   $_[1]) }
+sub OEncoding            { $_[0]->{usersettings}->set ('O-Encoding',           $_[1]) }
+sub TargetLanguage       { $_[0]->{usersettings}->set ('TargetLanguage',       $_[1]) }
+sub PlugInInfo           { $_[0]->{usersettings}->set ('PlugInInfo',           $_[1]) }
+sub SourceLanguage       { $_[0]->{usersettings}->set ('SourceLanguage',       $_[1]) }
+sub SettingsPath         { $_[0]->{usersettings}->set ('SettingsPath',         $_[1]) }
+sub SettingsRelativePath { $_[0]->{usersettings}->set ('SettingsRelativePath', $_[1]) }
+sub DataType             { $_[0]->{usersettings}->set ('DataType',             $_[1]) }
+sub SettingsName         { $_[0]->{usersettings}->set ('SettingsName',         $_[1]) }
+sub TargetDefaultFont    { $_[0]->{usersettings}->set ('TargetDefaultFont',    $_[1]) }
 
 =head2 copy_header ($source)
 
@@ -279,7 +291,7 @@ Append a string to the end of the body.  It's the caller's responsibility to ter
 
 sub append_text {
    my ($self, $str) = @_;
-   $self->{body}->append (XML::xmlapi->createtext($str));
+   $self->{body}->add (\$str);
 }
 
 =head2 append_segment($source, $target, $match, $slang, $tlang, $origin)
@@ -312,14 +324,14 @@ sub append_segment {
       $tlang = $self->tlang;
    }
    
-   $source = XML::xmlapi->escape ($source);
-   $target = XML::xmlapi->escape ($target);
-   my $tu = XML::xmlapi->parse ("<Tu MatchPercent=\"$match\"/>");
+   $source = XML::Snap->escape ($source);
+   $target = XML::Snap->escape ($target);
+   my $tu = XML::Snap->parse ("<Tu MatchPercent=\"$match\"/>");
    $tu->set ('origin', $origin) if defined $origin;
-   $tu->append (XML::xmlapi->parse ("<Tuv Lang=\"$slang\">$source</Tuv>"));
-   $tu->append (XML::xmlapi->parse ("<Tuv Lang=\"$tlang\">$target</Tuv>"));
+   $tu->append (XML::Snap->parse ("<Tuv Lang=\"$slang\">$source</Tuv>"));
+   $tu->append (XML::Snap->parse ("<Tuv Lang=\"$tlang\">$target</Tuv>"));
    
-   $self->{body}->append ($tu);
+   $self->{body}->add ($tu);
 }
 
 =head2 append_mark($string, $tag)
@@ -334,9 +346,9 @@ The default appearance is "text", but you can add C<$tag> if you want something 
 sub append_mark {
    my ($self, $text, $tag) = @_;
    $tag = 'text' unless $tag;
-   $text = XML::xmlapi->escape($text);
-   my $mark = XML::xmlapi->parse ("<ut DisplayText=\"$tag\" Style=\"external\">$text</ut>");
-   $self->{body}->append($mark);
+   $text = XML::Snap->escape($text);
+   my $mark = XML::Snap->parse ("<ut DisplayText=\"$tag\" Style=\"external\">$text</ut>");
+   $self->{body}->add($mark);
 }
 
 =head2 append_open_tag($string, $tag), append_close_tag ($string, $tag)
@@ -348,42 +360,50 @@ Appends a opening or closing tag.  Here, the C<$tag> is required.  (Well, it wil
 sub append_open_tag {
    my ($self, $text, $tag) = @_;
    $tag = 'cf' unless $tag;
-   $text = XML::xmlapi->escape($text);
-   my $mark = XML::xmlapi->parse ("<ut RightEdge=\"angle\" Style=\"external\" DisplayText=\"$tag\" Type=\"start\">$text</ut>");
-   $self->{body}->append($mark);
+   $text = XML::Snap->escape($text);
+   my $mark = XML::Snap->parse ("<ut RightEdge=\"angle\" Style=\"external\" DisplayText=\"$tag\" Type=\"start\">$text</ut>");
+   $self->{body}->add($mark);
 }
 sub append_close_tag {
    my ($self, $text, $tag) = @_;
    $tag = '/cf' unless $tag;
-   $text = XML::xmlapi->escape($text);
-   my $mark = XML::xmlapi->parse ("<ut LeftEdge=\"angle\" Style=\"external\" DisplayText=\"$tag\" Type=\"end\">$text</ut>");
-   $self->{body}->append($mark);
+   $text = XML::Snap->escape($text);
+   my $mark = XML::Snap->parse ("<ut LeftEdge=\"angle\" Style=\"external\" DisplayText=\"$tag\" Type=\"end\">$text</ut>");
+   $self->{body}->add($mark);
 }
 
-=head2 append_copy
+=head2 append_copy, copy_all
 
 If you have an XML piece from another TTX, you can append a copy of it directly into this TTX.  Note that the "XML piece" from C<source> and
 C<translated> of a segment may actually be a list (because a segment may contain tags and text).
+The C<copy_all> method copies the contents of another TTX's body tag into the current TTX, and can filter along the way.
 
 =cut
 
 sub append_copy {
    my $self = shift;
    foreach my $piece (@_) {
-      $self->{body}->append($piece->copy);
+      $self->{body}->add($piece); # This adds a copy of the piece if it's an XML node
    }
+}
+
+sub copy_all {
+   my $self = shift;
+   my $other = shift;
+   $self->{body}->copy_from($other->{body}, @_);
 }
 
 =head1 READING FROM THE BODY
 
 Since a TTX is structured data, not just text, reading from it consists of iterating across its child elements.  These elements
-are L<XML::xmlapi> elements due to the underlying XML nature of the TTX file.  I suppose some convenience functions might be a
-good idea, but frankly it's so easy to use the XML::xmlapi functions (well, I did write XML::xmlapi) that I haven't needed any
+are L<XML::Snap> elements due to the underlying XML nature of the TTX file.  I suppose some convenience functions might be a
+good idea, but frankly it's so easy to use the XML::Snap functions (well, I did write XML::Snap) that I haven't needed any
 so far.  This might be a place to watch for further details.
 
 =head2 content_elements()
 
-Returns all the content elements in a list.  Text may be broken up into multiple chunks, depending on how it was added.
+Returns all the top-level content elements in a list.  Depending on the structure of the TTX and the tool used to build it,
+this level may not include all segments (I've had segmented TTX with the segments embedded in top-level formatting elements).
 
 =cut
 sub content_elements {
@@ -403,7 +423,7 @@ Returns a list of just the segments in the body.  Useful for data extraction.
 
 sub segments {
    my $self = shift;
-   my @returns = $self->{body}->search('Tu');
+   my @returns = $self->{body}->all('Tu');
    foreach (@returns) {
       File::TTX::Content->rebless($_);
    }
@@ -424,20 +444,20 @@ sub date_now { strftime ('%Y%m%dT%H%M%SZ', localtime); }
 
 =head1 File::TTX::Content
 
-This helper class wraps the L<XML::xmlapi> parts returned by C<content_elements>, providing a little more comfort when working
+This helper class wraps the L<XML::Snap> parts returned by C<content_elements>, providing a little more comfort when working
 with them.
 
 =cut
 
 package File::TTX::Content;
 
-use base qw(XML::xmlapi);
+use base qw(XML::Snap);
 use warnings;
 use strict;
 
 =head2 rebless($xml)
 
-Called on an XML::xmlapi element to rebless it as a File::TTX::Content element.  This is a class method.
+Called on an XML::Snap element to rebless it as a File::TTX::Content element.  This is a class method.
 
 =cut
 
@@ -455,11 +475,11 @@ Returns the type of content piece.  The possible answers are 'text', 'open', 'cl
 sub type {
    my $self = shift;
    
-   return 'text' unless $self->is_element;
+   return 'text' if $self->istext;
    return 'segment' if $self->is('Tu');
    if ($self->is('ut')) {
-      return 'open'  if $self->get('Type') eq 'start';
-      return 'close' if $self->get('Type') eq 'end';
+      return 'open'  if $self->get('Type', '') eq 'start';
+      return 'close' if $self->get('Type', '') eq 'end';
       return 'mark';
    }
    return 'unknown';
@@ -476,7 +496,7 @@ sub tag {
    my $type = $self->type;
    return '' if $type eq 'text';
    return '' if $type eq 'segment';
-   return $self->set_or_get("DisplayText", shift);
+   return $self->set("DisplayText", shift);
 }
 
 =head2 translated(), translated_xml()
@@ -497,10 +517,34 @@ sub translated_xml {
 sub translated {
    my $self = shift;
    my $type = $self->type;
-   return $self->content unless $type eq 'segment';
+   return $self->rawcontent unless $type eq 'segment';
    my @t = $self->elements();
-   return $t[1]->content if defined $t[1];
-   return $t[0]->content;
+   return $t[1]->rawcontent if defined $t[1];
+   return $t[0]->rawcontent;
+}
+
+=head2 write_translated($thing)
+
+If not called on a segment, does nothing at all.  Eventually, of course, it will have to be possible to identify a text area and segment it,
+but this is not that function.
+
+If called on a segment with a string, deletes whatever may be in the segment's translated half, creates an XML::Snap text object from the string,
+and inserts said object.  If called on a segment with an XML::Snap object, insert it.  If called with a list of things, inserts one after the
+other with the same rules.
+
+=cut
+
+sub write_translated {
+   my $self = shift;
+   my $type = $self->type;
+   return unless $type eq 'segment';
+   my @t = $self->elements();
+   return unless defined $t[1]; # Not sure if this can actually happen, but it's best to play it safe.
+   my $t = $t[1];
+   $$t{children} = []; # Cheating a little here, because I know this is an XML::Snap object underneath.
+   for my $element (@_) {
+      $t->add($element);
+   }
 }
 
 =head2 source(), source_xml()
@@ -514,14 +558,33 @@ sub source_xml {
    my $self = shift;
    my $type = $self->type;
    return $self unless $type eq 'segment';
-   $self->search_first('Tuv')->children;
+   $self->first('Tuv')->children;
 }
 sub source {
    my $self = shift;
    my $type = $self->type;
-   return $self->content unless $type eq 'segment';
-   my $t = $self->search_first('Tuv');
-   return $t->content;
+   return $self->rawcontent unless $type eq 'segment';
+   my $t = $self->first('Tuv');
+   return $t->rawcontent;
+}
+
+=head2 write_source($thing)
+
+Works I<just like write_translated>, except on the source, which Trados tools won't let you do.  Use with care.
+
+=cut
+
+sub write_source {
+   my $self = shift;
+   my $type = $self->type;
+   return unless $type eq 'segment';
+   my @t = $self->elements();
+   return unless defined $t[0]; # Not sure if this can actually happen, but it's best to play it safe.
+   my $t = $t[0];
+   $$t{children} = []; # Cheating a little here, because I know this is an XML::Snap object underneath.
+   for my $element (@_) {
+      $t->add($element);
+   }
 }
 
 =head2 match()
@@ -534,19 +597,38 @@ sub match {
    my $self = shift;
    my $type = $self->type;
    return 0 unless $type eq 'segment';
-   $self->set_or_get('MatchPercent', shift);
+   $self->set('MatchPercent', shift);
+}
+
+=head2 source_lang(), translated_lang()
+
+Returns and/or sets the source or target language of a segment (or nothing if it's not a segment).
+
+=cut
+
+sub source_lang {
+   my $self = shift;
+   return unless $self->type eq 'segment';
+   my $xml = $self->search_first('Tuv');
+   $xml->set('Lang', shift) if $xml;
+}
+sub translated_lang {
+   my $self = shift;
+   return unless $self->type eq 'segment';
+   my @t = $self->elements();
+   my $xml = $t[1] if defined $t[1];
+   $xml->set('Lang', shift) if $xml;
 }
 
 =head2 Other things we'll want
 
-The XML::xmlapi doesn't support the full range of XML manipulation in its current incarnation, so I'll need to revisit it, and
+The XML::Snap doesn't support the full range of XML manipulation in its current incarnation, so I'll need to revisit it, and
 also I don't need all this functionality today, but here's what the content handler should be able to do:
 
  - Segment non-segmented text, replacing a chunk or series of chunks (in case neighboring text chunks don't cover a full segment)
    with a segment or a segment-plus-extra-text.
  - Translate a segment, i.e. replace the translated content.
  - Modify the source of a segment (just in case).
- - See and set the source and target languages of a segment.
  
 If you are actually using Perl to access TTX files and would like to do these things, then by all means drop me a line and tell me
 to get the lead out.
